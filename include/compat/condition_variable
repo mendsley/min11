@@ -1,0 +1,6 @@
+#include "min11/condition_variable.h"
+
+namespace std
+{
+	using min11::condition_variable;
+}

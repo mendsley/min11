@@ -1,0 +1,7 @@
+#include "min11/mutex.h"
+
+namespace std
+{
+	using min11::mutex;
+	using min11::unique_lock;
+}

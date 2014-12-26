@@ -1,0 +1,8 @@
+#include "min11/future.h"
+
+namespace std
+{
+	using min11::future;
+	using min11::shared_future;
+	using min11::promise;
+}
