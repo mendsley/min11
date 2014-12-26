@@ -28,8 +28,12 @@
 #include "min11/condition_variable.h"
 #include "min11/atomic_counter.h"
 
-#define WIN32_LEAN_AND_MEAN
-#include <Windows.h>
+#if defined(_XBOX_VER)
+#	include <xtl.h>
+#else
+#	define WIN32_LEAN_AND_MEAN
+#	include <Windows.h>
+#endif
 #include <limits.h>
 
 using namespace min11;
