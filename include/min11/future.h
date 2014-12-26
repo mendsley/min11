@@ -27,11 +27,14 @@
 #ifndef MIN11__FUTURE_H
 #define MIN11__FUTURE_H
 
+#include "config.h"
 #include "atomic_counter.h"
 #include "condition_variable.h"
 #include "mutex.h"
 
-#include <stdexcept>
+#if MIN11_HAS_EXCEPTIONS
+#	include <stdexcept>
+#endif
 
 namespace min11
 {	
@@ -105,13 +108,28 @@ namespace min11
 	/**
 	 * Minimal emulation for std::future_error
 	 */
-	struct future_error : public std::logic_error
+#if MIN11_HAS_EXCEPTIONS
+	struct future_error
+		: public std::logic_error
 	{
 		future_error(const char* message)
 			: std::logic_error(message)
 		{
 		}
 	};
+#endif
+
+	namespace detail
+	{
+		static inline void throw_future_error(const char* message)
+		{
+#if MIN11_HAS_EXCEPTIONS
+			throw future_error(message);
+#else
+			MIN11_THROW_EXCEPTION(message);
+#endif
+		}
+	}
 
 	/**
 	 * Minimal emulation for std::future
@@ -154,7 +172,7 @@ namespace min11
 		T& get()
 		{
 			if (!valid())
-				throw future_error("future has no state object, likely shared");
+				detail::throw_future_error("future has no state object, likely shared");
 				
 			return state->get_value(false);
 		}
@@ -162,7 +180,7 @@ namespace min11
 		void wait() const
 		{
 			if (!valid())
-				throw future_error("future has no state object, likely shared");
+				detail::throw_future_error("future has no state object, likely shared");
 
 			state->wait();
 		}
@@ -236,7 +254,7 @@ namespace min11
 		void wait() const
 		{
 			if (!valid())
-				throw throw_future_error("future has no state object, likely shared");
+				detail::throw_future_error("future has no state object");
 
 			state->wait();
 		}
@@ -244,7 +262,7 @@ namespace min11
 		const T& get() const
 		{
 			if (!valid())
-				throw throw_future_error("future has no state object, likely shared");
+				detail::throw_future_error("future has no state object");
 
 			return state->get_value(true);
 		}
@@ -323,7 +341,7 @@ namespace min11
 			{
 				unique_lock<mutex> lock(mtx);
 				if (retrieved && !allow_multiple_gets)
-					throw future_error("future already retreived");
+					detail::throw_future_error("future already retreived");
 					
 				retrieved = true;
 				while (!ready)
@@ -346,7 +364,7 @@ namespace min11
 			void set_value_with_lock(const T& v)
 			{
 				if (ready)
-					throw future_error("future state already set");
+					detail::throw_future_error("future state already set");
 					
 				value = v;
 				ready = true;
