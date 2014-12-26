@@ -63,9 +63,9 @@ namespace min11
 		template<typename T>
 		class movable_future
 		{
-			friend future<T>;
-			friend shared_future<T>;
-			friend promise<T>;
+			friend class future<T>;
+			friend class shared_future<T>;
+			friend class promise<T>;
 
 		public:
 			movable_future(const movable_future& rhs)
@@ -137,9 +137,9 @@ namespace min11
 	template<typename T>
 	class future
 	{
-		friend promise<T>;
-		friend shared_future<T>;
-		friend detail::movable_future<T>;
+		friend class promise<T>;
+		friend class shared_future<T>;
+		friend class detail::movable_future<T>;
 	public:
 		future()
 			: state(0)
@@ -158,10 +158,11 @@ namespace min11
 				state->dec_ref();
 		}
 		
-		future& operator=(detail::movable_future<T> rhs)
+		future& operator=(const detail::movable_future<T>& rhs)
 		{
 			state = rhs.state;
 			rhs.state = 0;
+			return *this;
 		}
 		
 		bool valid() const
@@ -191,7 +192,7 @@ namespace min11
 		}
 
 	private:
-		future(const future&); // = delete;
+		explicit future(const future&); // = delete;
 		future& operator=(const future&); // = delete;
 	
 		detail::future_state<T>* state;
@@ -209,7 +210,7 @@ namespace min11
 		{
 		}
 
-		shared_future(detail::movable_future<T>& rhs)
+		shared_future(const detail::movable_future<T>& rhs)
 			: state(rhs.state)
 		{
 			rhs.state = 0;
@@ -228,22 +229,24 @@ namespace min11
 				state->dec_ref();
 		}
 		
-		shared_future& operator=(const shared_future& other)
+		shared_future& operator=(const shared_future& rhs)
 		{
 			if (rhs.state)
 				rhs.state->add_ref();
 			if (state)
 				state->dec_ref();
 			state = rhs.state;
+			return *this;
 		}
 		
-		shared_future& operator=(detail::movable_future<T>& rhs)
+		shared_future& operator=(const detail::movable_future<T>& rhs)
 		{
 			if (state)
 				state->dec_ref();
 
 			state = rhs.state;
 			rhs.state = 0;
+			return *this;
 		}
 		
 		bool valid() const
@@ -297,6 +300,7 @@ namespace min11
 		{
 			return detail::movable_future<T>(state);
 		}
+
 	private:
 		promise(const promise&); // = delete;
 		promise& operator=(const promise&); // = delete;
@@ -309,7 +313,7 @@ namespace min11
 		template<typename T>
 		class future_state
 		{
-			friend future<T>;
+			friend class future<T>;
 		public:
 			future_state()
 				: refcnt(1)
@@ -354,7 +358,7 @@ namespace min11
 			{
 				unique_lock<mutex> lock(mtx);
 				while (!ready)
-					cond.wait(lock)
+					cond.wait(lock);
 			}
 
 		private:

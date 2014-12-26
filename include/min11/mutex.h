@@ -37,7 +37,7 @@ namespace min11
 	 */
 	class mutex
 	{
-		friend condition_variable;
+		friend class condition_variable;
 	public:
 		mutex();
 		~mutex();
