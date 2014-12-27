@@ -13,7 +13,7 @@ C++11 support:
 
 Compilers supported:
 --------------------
-* Visual Studio 2009 (vc9)
+* Visual Studio 2008 (vc9)
 * Visual Studio 2010 (vc10)
 * Visual Studio 2012 (vs11) - Not needed, vc11 has support
 * Visual Studio 2013 (vs12) - Not needed, vc12 has support
