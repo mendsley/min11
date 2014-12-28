@@ -108,10 +108,10 @@ atomic_counter::atomic_counter(long initial)
 
 void atomic_counter::incr()
 {
-	__sync_fetch_and_add(&value, 1);
+	__sync_add_and_fetch(&value, 1);
 }
 
 long atomic_counter::decr()
 {
-	return __sync_fetch_and_sub(&value, 1) - 1;
+	return __sync_sub_and_fetch(&value, 1);
 }
