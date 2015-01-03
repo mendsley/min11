@@ -91,6 +91,11 @@ namespace min11
 				return movable_future<T>(f);
 			}
 
+			shared_future<T> share()
+			{
+				return shared_future<T>(*this);
+			}
+
 		private:
 			movable_future& operator=(const movable_future&); // = delete;
 
