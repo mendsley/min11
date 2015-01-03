@@ -36,12 +36,17 @@
 #	include <stdexcept>
 #endif
 
+#if MIN11_HAS_RVALREFS
+#	include <utility> // std::move
+#endif
+
 namespace min11
 {	
 	template<typename T> class future;
 	template<typename T> class shared_future;
 	template<typename T> class promise;
 	namespace detail { template<typename T> class future_state; }
+#if !MIN11_HAS_RVALREFS
 	namespace detail { template<typename T> class movable_future; }
 
 	/**
@@ -104,6 +109,7 @@ namespace min11
 			mutable detail::future_state<T>* state;
 		};
 	}
+#endif
 
 	/**
 	 * Minimal emulation for std::future_error
@@ -139,18 +145,29 @@ namespace min11
 	{
 		friend class promise<T>;
 		friend class shared_future<T>;
+#if !MIN11_HAS_RVALREFS
 		friend class detail::movable_future<T>;
+#endif
 	public:
 		future()
 			: state(0)
 		{
 		}
 
+#if MIN11_HAS_RVALREFS
+		future(future<T>&& rhs)
+			: state(rhs.state)
+		{
+			rhs.state = 0;
+		}
+
+#else
 		future(const detail::movable_future<T>& rhs)
 			: state(rhs.state)
 		{
 			rhs.state = 0;
 		}
+#endif
 		
 		~future()
 		{
@@ -158,25 +175,44 @@ namespace min11
 				state->dec_ref();
 		}
 		
+#if MIN11_HAS_RVALREFS
+		future& operator=(future<T>&& rhs)
+		{
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+#else
 		future& operator=(const detail::movable_future<T>& rhs)
 		{
 			state = rhs.state;
 			rhs.state = 0;
 			return *this;
 		}
+#endif
 		
 		bool valid() const
 		{
 			return state && !state->retrieved;
 		}
 		
+#if MIN11_HAS_RVALREFS
+		T get()
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object, likely shared");
+
+			return std::move(state->get_value(false));
+		}
+#else
 		T& get()
 		{
 			if (!valid())
 				detail::throw_future_error("future has no state object, likely shared");
-				
+
 			return state->get_value(false);
 		}
+#endif
 		
 		void wait() const
 		{
@@ -194,6 +230,13 @@ namespace min11
 	private:
 		explicit future(const future&); // = delete;
 		future& operator=(const future&); // = delete;
+
+		future(detail::future_state<T>* s)
+			: state(s)
+		{
+			if (s)
+				s->add_ref();
+		}
 	
 		detail::future_state<T>* state;
 	};
@@ -210,11 +253,25 @@ namespace min11
 		{
 		}
 
+#if MIN11_HAS_RVALREFS
+		shared_future(future<T>&& rhs)
+			: state(rhs.state)
+		{
+			rhs.state = 0;
+		}
+
+		shared_future(shared_future<T>&& rhs)
+			: state(rhs.state)
+		{
+			rhs.state = 0;
+		}
+#else
 		shared_future(const detail::movable_future<T>& rhs)
 			: state(rhs.state)
 		{
 			rhs.state = 0;
 		}
+#endif
 		
 		shared_future(const shared_future<T>& other)
 			: state(other.state)
@@ -239,6 +296,27 @@ namespace min11
 			return *this;
 		}
 		
+#if MIN11_HAS_RVALREFS
+		shared_future& operator=(future<T>&& rhs)
+		{
+			if (state)
+				state->dec_ref();
+
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+
+		shared_future& operator=(shared_future<T>&& rhs)
+		{
+			if (state)
+				state->dec_ref();
+
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+#else
 		shared_future& operator=(const detail::movable_future<T>& rhs)
 		{
 			if (state)
@@ -248,6 +326,7 @@ namespace min11
 			rhs.state = 0;
 			return *this;
 		}
+#endif
 		
 		bool valid() const
 		{
@@ -291,15 +370,29 @@ namespace min11
 			state->dec_ref();
 		}
 		
+#if MIN11_HAS_RVALREFS
+		void set_value(T&& value)
+		{
+			state->set_value(std::move(value));
+		}
+#endif
 		void set_value(const T& value)
 		{
 			state->set_value(value);
 		}
+
 		
+#if MIN11_HAS_RVALREFS
+		future<T> get_future()
+		{
+			return future<T>(state);
+		}
+#else
 		detail::movable_future<T> get_future()
 		{
 			return detail::movable_future<T>(state);
 		}
+#endif
 
 	private:
 		promise(const promise&); // = delete;
@@ -334,7 +427,14 @@ namespace min11
 					delete this;
 				}
 			}
-			
+
+#if MIN11_HAS_RVALREFS
+			void set_value(T&& value)
+			{
+				unique_lock<mutex> lock(mtx);
+				set_value_with_lock(std::move(value));
+			}
+#endif
 			void set_value(const T& value)
 			{
 				unique_lock<mutex> lock(mtx);
@@ -365,11 +465,23 @@ namespace min11
 			future_state(const future_state&); // = delete;
 			future_state& operator=(const future_state&); // = delete;
 			
+#if MIN11_HAS_RVALREFS
+			void set_value_with_lock(T&& v)
+			{
+				if (ready)
+					detail::throw_future_error("future state already set");
+
+				value = std::move(v);
+				ready = true;
+				cond.notify_all();
+			}
+#endif
+
 			void set_value_with_lock(const T& v)
 			{
 				if (ready)
 					detail::throw_future_error("future state already set");
-					
+
 				value = v;
 				ready = true;
 				cond.notify_all();

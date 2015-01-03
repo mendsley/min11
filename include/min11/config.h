@@ -60,4 +60,31 @@
 #	define MIN11_THROW_EXCEPTION(message) std::abort()
 #endif
 
+/**
+ * MIN11_HAS_RVALREFS
+ *
+ * Enables support for rvalue references and move semantics. Min11 will
+ * attempt to assertain this value from the compiler (msvc, clang, gcc),
+ * but it may be explicitly defined to override the default behavior
+ */
+#if !defined(MIN11_HAS_RVALREFS)
+#	if defined(_MSC_VER)
+#		if _MSC_VER >= 1600
+#			define MIN11_HAS_RVALREFS 1
+#		else
+#			define MIN11_HAS_RVALREFS 0
+#		endif
+#	elif defined(__clang__)
+#		define MIN11_HAS_RVALREFS __has_extension(cxx_rvalue_references)
+#	elif defined(__GNUC__)
+#		if defined(__GXX_EXPERIMENTAL_CXX0X__) || __cplusplus == 201103L
+#			define MIN11_HAS_RVALREFS 1
+#		else
+#			define MIN11_HAS_RVALREFS 0
+#		endif
+#	else // unknown complier
+#		define MIN11_HAS_RVALREFS 0
+#	endif
+#endif
+
 #endif // MIN11__CONFIG_H
