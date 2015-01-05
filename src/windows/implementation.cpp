@@ -28,7 +28,9 @@
 #include "min11/condition_variable.h"
 #include "min11/atomic_counter.h"
 
+#if !defined(_DURANGO)
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
 
 using namespace min11;
