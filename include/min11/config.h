@@ -87,4 +87,14 @@
 #	endif
 #endif
 
+/**
+ * MIN11_HAS_FUTURE_CONTINUATIONS
+ *
+ * Enables support for set_continuation on min11::future<T>. This allows
+ * a contiuation on the future's state ti be invoked once the state is set.
+ */
+#if !defined(MIN11_HAS_FUTURE_CONTINUATIONS)
+#	define MIN11_HAS_FUTURE_CONTINUATIONS 0
+#endif
+
 #endif // MIN11__CONFIG_H

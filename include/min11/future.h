@@ -40,6 +40,10 @@
 #	include <utility> // std::move
 #endif
 
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+#	include <functional> // std::function
+#endif
+
 namespace min11
 {	
 	template<typename T> class future;
@@ -232,6 +236,25 @@ namespace min11
 			return shared_future<T>(move(*this));
 		}
 
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+		template<typename Func>
+#if MIN11_HAS_RVALREFS
+		void set_continuation(Func&& f)
+#else
+		void set_continuation(const Func& f)
+#endif
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object, likely shared");
+
+#if MIN11_HAS_RVALREFS
+			state->set_continuation(std::move(f));
+#else
+			state->set_continuation(f);
+#endif
+		}
+#endif
+
 	private:
 		explicit future(const future&); // = delete;
 		future& operator=(const future&); // = delete;
@@ -260,8 +283,13 @@ namespace min11
 
 #if MIN11_HAS_RVALREFS
 		shared_future(future<T>&& rhs)
-			: state(rhs.state)
+			: state(0)
 		{
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
+			state = rhs.state;
 			rhs.state = 0;
 		}
 
@@ -272,8 +300,13 @@ namespace min11
 		}
 #else
 		shared_future(const detail::movable_future<T>& rhs)
-			: state(rhs.state)
+			: state(0)
 		{
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
+			state = rhs.state;
 			rhs.state = 0;
 		}
 #endif
@@ -307,6 +340,11 @@ namespace min11
 			if (state)
 				state->dec_ref();
 
+			state = 0;
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
 			state = rhs.state;
 			rhs.state = 0;
 			return *this;
@@ -327,6 +365,11 @@ namespace min11
 			if (state)
 				state->dec_ref();
 
+			state = 0;
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
 			state = rhs.state;
 			rhs.state = 0;
 			return *this;
@@ -452,10 +495,13 @@ namespace min11
 				if (retrieved && !allow_multiple_gets)
 					detail::throw_future_error("future already retreived");
 					
-				retrieved = true;
 				while (!ready)
 					cond.wait(lock);
-				
+
+				if (retrieved && !allow_multiple_gets)
+					detail::throw_future_error("future already retreived");
+
+				retrieved = true;
 				return value;
 			}
 			
@@ -464,6 +510,39 @@ namespace min11
 				unique_lock<mutex> lock(mtx);
 				while (!ready)
 					cond.wait(lock);
+			}
+
+			template<typename Func>
+#if MIN11_HAS_RVALREFS
+			void set_continuation(Func&& f)
+#else
+			void set_continuation(const Func& f)
+#endif
+			{
+				unique_lock<mutex> lock(mtx);
+
+				if (cont)
+					detail::throw_future_error("continuation state already set");
+				if (retrieved)
+					detail::throw_future_error("future already retrieved");
+
+				if (ready)
+				{
+					retrieved = true;
+#if MIN_HAS_RVALREFS
+					f(std::move(value));
+#else
+					f(value);
+#endif
+				}
+				else
+				{
+#if MIN11_HAS_RVALREFS
+					cont = std::move(f);
+#else
+					cont = f;
+#endif
+				}
 			}
 
 		private:
@@ -478,7 +557,7 @@ namespace min11
 
 				value = std::move(v);
 				ready = true;
-				cond.notify_all();
+				notify_with_lock();
 			}
 #endif
 
@@ -489,6 +568,20 @@ namespace min11
 
 				value = v;
 				ready = true;
+				notify_with_lock();
+			}
+
+			void notify_with_lock()
+			{
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+#if MIN11_HAS_RVALREFS
+				if (cont)
+					cont(std::move(value));
+#else
+				if (cont)
+					cont(value);
+#endif
+#endif
 				cond.notify_all();
 			}
 
@@ -496,6 +589,13 @@ namespace min11
 			T value;
 			mutex mtx;
 			condition_variable cond;
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+#if MIN11_HAS_RVALUES
+			std::function<void(T&&)> cont;
+#else
+			std::function<void(const T&)> cont;
+#endif
+#endif
 			bool retrieved;
 			volatile bool ready;
 		};
