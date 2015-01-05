@@ -205,23 +205,16 @@ namespace min11
 			return state && !state->retrieved;
 		}
 		
-#if MIN11_HAS_RVALREFS
 		T get()
 		{
 			if (!valid())
 				detail::throw_future_error("future has no state object, likely shared");
-
+#if MIN11_HAS_RVALREFS
 			return std::move(state->get_value(false));
-		}
 #else
-		T& get()
-		{
-			if (!valid())
-				detail::throw_future_error("future has no state object, likely shared");
-
 			return state->get_value(false);
-		}
 #endif
+		}
 		
 		void wait() const
 		{
