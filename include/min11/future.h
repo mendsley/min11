@@ -118,6 +118,8 @@ namespace min11
 			mutable detail::future_state<T>* state;
 		};
 	}
+#else
+	using std::move;
 #endif
 
 	/**
@@ -455,12 +457,12 @@ namespace min11
 				, ready(false)
 			{
 			}
-			
+
 			void add_ref()
 			{
 				refcnt.incr();
 			}
-			
+
 			void dec_ref()
 			{
 				if (0 == refcnt.decr())
@@ -481,7 +483,7 @@ namespace min11
 				unique_lock<mutex> lock(mtx);
 				set_value_with_lock(value);
 			}
-			
+
 			T& get_value(bool allow_multiple_gets)
 			{
 				unique_lock<mutex> lock(mtx);
@@ -592,7 +594,407 @@ namespace min11
 			bool retrieved;
 			volatile bool ready;
 		};
+
+		template<>
+		class future_state<void>
+		{
+			friend class future<void>;
+			friend class shared_future<void>;
+		public:
+			future_state()
+				: refcnt(1)
+				, retrieved(false)
+				, ready(false)
+			{
+			}
+
+			void add_ref()
+			{
+				refcnt.incr();
+			}
+
+			void dec_ref()
+			{
+				if (0 == refcnt.decr())
+				{
+					delete this;
+				}
+			}
+
+			void set_value()
+			{
+				unique_lock<mutex> lock(mtx);
+				set_value_with_lock();
+			}
+
+			void get_value(bool allow_multiple_gets)
+			{
+				unique_lock<mutex> lock(mtx);
+				if (retrieved && !allow_multiple_gets)
+					detail::throw_future_error("future already retreived");
+
+				while (!ready)
+					cond.wait(lock);
+
+				if (retrieved && !allow_multiple_gets)
+					detail::throw_future_error("future already retreived");
+
+				retrieved = true;
+			}
+
+			void wait()
+			{
+				unique_lock<mutex> lock(mtx);
+				while (!ready)
+					cond.wait(lock);
+			}
+
+			template<typename Func>
+#if MIN11_HAS_RVALREFS
+			void set_continuation(Func&& f)
+#else
+			void set_continuation(const Func& f)
+#endif
+			{
+				unique_lock<mutex> lock(mtx);
+
+				if (cont)
+					detail::throw_future_error("continuation state already set");
+				if (retrieved)
+					detail::throw_future_error("future already retrieved");
+
+				if (ready)
+				{
+					retrieved = true;
+					f();
+				}
+				else
+				{
+#if MIN11_HAS_RVALREFS
+					cont = std::move(f);
+#else
+					cont = f;
+#endif
+				}
+			}
+
+		private:
+			future_state(const future_state&); // = delete;
+			future_state& operator=(const future_state&); // = delete;
+
+			void set_value_with_lock()
+			{
+				if (ready)
+					detail::throw_future_error("future state already set");
+
+				ready = true;
+				notify_with_lock();
+			}
+
+			void notify_with_lock()
+			{
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+				if (cont)
+					cont();
+#endif
+				cond.notify_all();
+			}
+
+			detail::atomic_counter refcnt;
+			mutex mtx;
+			condition_variable cond;
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			std::function<void()> cont;
+#endif
+			bool retrieved;
+			volatile bool ready;
+		};
 	}
+
+	template<>
+	class future<void>
+	{
+		friend class promise<void>;
+		friend class shared_future<void>;
+#if !MIN11_HAS_RVALREFS
+		friend class detail::movable_future<void>;
+#endif
+	public:
+		future()
+			: state(0)
+		{
+		}
+
+#if MIN11_HAS_RVALREFS
+		future(future<void>&& rhs)
+			: state(rhs.state)
+		{
+			rhs.state = 0;
+		}
+
+#else
+		future(const detail::movable_future<void>& rhs)
+			: state(rhs.state)
+		{
+			rhs.state = 0;
+		}
+#endif
+
+		~future()
+		{
+			if (state)
+				state->dec_ref();
+		}
+
+#if MIN11_HAS_RVALREFS
+		future& operator=(future<void>&& rhs)
+		{
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+#else
+		future& operator=(const detail::movable_future<void>& rhs)
+		{
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+#endif
+
+		bool valid() const
+		{
+			return state && !state->retrieved;
+		}
+
+		void get()
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object, likely shared");
+			state->get_value(false);
+		}
+
+		void wait() const
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object, likely shared");
+
+			state->wait();
+		}
+
+		shared_future<void> share();
+
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+		template<typename Func>
+#if MIN11_HAS_RVALREFS
+		void set_continuation(Func&& f)
+#else
+		void set_continuation(const Func& f)
+#endif
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object, likely shared");
+
+#if MIN11_HAS_RVALREFS
+			state->set_continuation(std::move(f));
+#else
+			state->set_continuation(f);
+#endif
+		}
+#endif
+
+	private:
+		explicit future(const future&); // = delete;
+		future& operator=(const future&); // = delete;
+
+		future(detail::future_state<void>* s)
+			: state(s)
+		{
+			if (s)
+				s->add_ref();
+		}
+
+		detail::future_state<void>* state;
+	};
+
+	/**
+	 * Minimal emulation for std::shared_future
+	 */
+	template<>
+	class shared_future<void>
+	{
+	public:
+		shared_future()
+			: state(0)
+		{
+		}
+
+#if MIN11_HAS_RVALREFS
+		shared_future(future<void>&& rhs)
+			: state(0)
+		{
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
+			state = rhs.state;
+			rhs.state = 0;
+		}
+
+		shared_future(shared_future<void>&& rhs)
+			: state(rhs.state)
+		{
+			rhs.state = 0;
+		}
+#else
+		shared_future(const detail::movable_future<void>& rhs)
+			: state(0)
+		{
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
+			state = rhs.state;
+			rhs.state = 0;
+		}
+#endif
+
+		shared_future(const shared_future<void>& other)
+			: state(other.state)
+		{
+			if (state)
+				state->add_ref();
+		}
+
+		~shared_future()
+		{
+			if (state)
+				state->dec_ref();
+		}
+
+		shared_future& operator=(const shared_future& rhs)
+		{
+			if (rhs.state)
+				rhs.state->add_ref();
+			if (state)
+				state->dec_ref();
+			state = rhs.state;
+			return *this;
+		}
+
+#if MIN11_HAS_RVALREFS
+		shared_future& operator=(future<void>&& rhs)
+		{
+			if (state)
+				state->dec_ref();
+
+			state = 0;
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+
+		shared_future& operator=(shared_future<void>&& rhs)
+		{
+			if (state)
+				state->dec_ref();
+
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+#else
+		shared_future& operator=(const detail::movable_future<void>& rhs)
+		{
+			if (state)
+				state->dec_ref();
+
+			state = 0;
+#if MIN11_HAS_FUTURE_CONTINUATIONS
+			if (rhs.state && rhs.state->cont)
+				detail::throw_future_error("future with continuation cannot be shared");
+#endif
+			state = rhs.state;
+			rhs.state = 0;
+			return *this;
+		}
+#endif
+
+		bool valid() const
+		{
+			return state != 0;
+		}
+
+		void wait() const
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object");
+
+			state->wait();
+		}
+
+		void get() const
+		{
+			if (!valid())
+				detail::throw_future_error("future has no state object");
+
+			state->get_value(true);
+		}
+
+	private:
+		detail::future_state<void>* state;
+	};
+
+	/**
+	 * Minimal emulation of std::promise
+	 */
+	template<>
+	class promise<void>
+	{
+	public:
+		promise()
+			: state(new detail::future_state<void>)
+		{
+		}
+
+		~promise()
+		{
+			state->dec_ref();
+		}
+
+		void set_value()
+		{
+			state->set_value();
+		}
+
+#if MIN11_HAS_RVALREFS
+		future<void> get_future()
+		{
+			return future<void>(state);
+		}
+#else
+		detail::movable_future<void> get_future()
+		{
+			return detail::movable_future<void>(state);
+		}
+#endif
+
+	private:
+		promise(const promise&); // = delete;
+		promise& operator=(const promise&); // = delete;
+
+		detail::future_state<void>* state;
+	};
+
+	inline shared_future<void> future<void>::share()
+	{
+		return shared_future<void>(move(*this));
+	}
+
 }
 
 #endif // MIN11__FUTURE_H
