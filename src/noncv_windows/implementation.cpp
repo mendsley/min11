@@ -96,7 +96,7 @@ void condition_variable::wait(unique_lock<mutex>& lock)
 {
 	InterlockedIncrementRelease(&cv->waiters);
 	lock.mutex()->unlock();
-	WaitForSingleObject(&cv->sema, INFINITE);
+	WaitForSingleObject(cv->sema, INFINITE);
 	lock.mutex()->lock();
 }
 
