@@ -50,6 +50,9 @@ namespace min11
 	template<typename T> class shared_future;
 	template<typename T> class promise;
 	namespace detail { template<typename T> class future_state; }
+	namespace detail { template<typename T, typename Data> class future_state_data; }
+	namespace detail { template<typename T> class promise_holder; }
+	namespace detail { template<typename T, typename Data> class promise_holder_data; }
 #if !MIN11_HAS_RVALREFS
 	namespace detail { template<typename T> class movable_future; }
 
@@ -146,6 +149,8 @@ namespace min11
 			MIN11_THROW_EXCEPTION(message);
 #endif
 		}
+
+		struct make_ready_helper;
 	}
 
 	/**
@@ -156,6 +161,7 @@ namespace min11
 	{
 		friend class promise<T>;
 		friend class shared_future<T>;
+		friend detail::make_ready_helper;
 #if !MIN11_HAS_RVALREFS
 		friend class detail::movable_future<T>;
 #endif
@@ -395,6 +401,37 @@ namespace min11
 	private:
 		detail::future_state<T>* state;
 	};
+
+	// promise that does not keep the internal state alive
+	template<typename T>
+	class weak_promise
+	{
+		friend promise<T>;
+	public:
+		weak_promise()
+			: state(NULL)
+		{
+		}
+		
+#if MIN11_HAS_RVALREFS
+		void set_value(T&& value)
+		{
+			state->set_value(std::move(value));
+		}
+#endif
+		void set_value(const T& value)
+		{
+			state->set_value(value);
+		}
+
+	private:
+		explicit weak_promise(detail::future_state<T>* state)
+			: state(state)
+		{
+		}
+
+		detail::future_state<T>* state;
+	};
 	
 	/**
 	 * Minimal emulation of std::promise
@@ -402,13 +439,22 @@ namespace min11
 	template<typename T>
 	class promise
 	{
+		friend detail::promise_holder<T>;
 	public:
 		promise()
 			: state(new detail::future_state<T>)
 		{
 		}
+
+#if MIN11_HAS_RVALREFS
+		promise(promise<T>&& other)
+			: state(other.state)
+		{
+			other.state = 0;
+		}
+#endif
 		
-		~promise()
+		virtual ~promise()
 		{
 			state->dec_ref();
 		}
@@ -437,15 +483,183 @@ namespace min11
 		}
 #endif
 
+		detail::promise_holder<T> hold()
+		{
+			return detail::promise_holder<T>(state);
+		}
+
 	private:
 		promise(const promise&); // = delete;
 		promise& operator=(const promise&); // = delete;
 
+	protected:
+		promise(detail::future_state<T>* st)
+			: state(st)
+		{
+			state->add_ref();
+		}
+
+		weak_promise<T> weak_ref()
+		{
+			return weak_promise<T>(state);
+		}
+
 		detail::future_state<T>* state;
+	};
+
+	template<typename T, typename Data>
+	class promise_with_data : public promise<T>
+	{
+		friend detail::promise_holder_data<T, Data>;
+	public:
+		promise_with_data()
+			: promise<T>(new detail::future_state_data<T, Data>)
+		{
+			promise<T>::state->dec_ref();
+		}
+
+#if MIN11_HAS_RVALREFS
+		promise_with_data(promise_with_data<T, Data>&& other)
+			: promise<T>(std::move(other))
+		{
+		}
+
+		promise_with_data& operator=(promise_with_data<T, Data>&& other)
+		{
+			if (other.state)
+				other.state->add_ref();
+			if (this->state)
+				this->state->dec_ref();
+			this->state = other.state;
+			other.state = NULL;
+			return *this;
+		}
+#endif
+
+		Data& data()
+		{
+			return static_cast<detail::future_state_data<T, Data>*>(promise<T>::state)->data();
+		}
+
+		detail::promise_holder_data<T, Data> hold()
+		{
+			return detail::promise_holder_data<T, Data>(static_cast<detail::future_state_data<T, Data>*>(promise<T>::state));
+		}
+
+		using promise<T>::weak_ref;
+
+	private:
+		promise_with_data(detail::future_state_data<T, Data>* state)
+			: promise<T>(state)
+		{
+		}
 	};
 	
 	namespace detail
 	{
+		template<typename T>
+		struct closure_root
+		{
+			virtual ~closure_root() {}
+#if MIN11_HAS_RVALREFS
+			virtual void invoke(T&& v) = 0;
+#else
+			virtual void invoke(const T& v) = 0;
+#endif
+		};
+
+		template<typename T, typename Func>
+		struct closure : closure_root<T>
+		{
+
+#if MIN11_HAS_RVALREFS
+			closure(Func func)
+				: f(std::move(func))
+#else
+			closure(const Func& func)
+				: f(func)
+#endif
+			{
+			}
+
+#if MIN11_HAS_RVALREFS
+			virtual void invoke(T&& v)
+			{
+				f(std::move(v));
+			}
+#else
+			virtual void invoke(const T& v)
+			{
+				f(v);
+			}
+#endif
+
+			Func f;
+		};
+
+		template<typename T>
+		struct closure_storage
+		{
+			closure_storage()
+				: ptr(0)
+			{
+			}
+
+			~closure_storage()
+			{
+				release();
+			}
+
+			template<typename Func>
+#if MIN11_HAS_RVALREFS
+			void alloc(Func func)
+#else
+			void alloc(const Func& func)
+#endif
+			{
+				release();
+				if (sizeof(closure<T, Func>) < sizeof(space))
+				{
+					ptr = new(&space) closure<T, Func>(
+#if MIN11_HAS_RVALREFS
+						std::move(func)
+#else
+						func
+#endif
+					);
+				}
+				else
+				{
+					ptr = new closure<T, Func>(
+#if MIN11_HAS_RVALREFS
+						std::move(func)
+#else
+						func
+#endif
+					);
+				}
+			}
+
+			void release()
+			{
+				if (static_cast<void*>(ptr) != &space.ptr)
+				{
+					delete ptr;
+				}
+				else if (ptr)
+				{
+					ptr->~closure_root();
+				}
+			}
+
+			closure_root<T>* ptr;
+			union
+			{
+				long double alignment_;
+				void* ptr[3];
+			} space;
+		};
+
 		template<typename T>
 		class future_state
 		{
@@ -455,6 +669,10 @@ namespace min11
 				: refcnt(1)
 				, retrieved(false)
 				, ready(false)
+			{
+			}
+
+			virtual ~future_state()
 			{
 			}
 
@@ -516,7 +734,7 @@ namespace min11
 			{
 				unique_lock<mutex> lock(mtx);
 
-				if (cont)
+				if (cont.ptr)
 					detail::throw_future_error("continuation state already set");
 				if (retrieved)
 					detail::throw_future_error("future already retrieved");
@@ -524,7 +742,7 @@ namespace min11
 				if (ready)
 				{
 					retrieved = true;
-#if MIN_HAS_RVALREFS
+#if MIN11_HAS_RVALREFS
 					f(std::move(value));
 #else
 					f(value);
@@ -533,9 +751,9 @@ namespace min11
 				else
 				{
 #if MIN11_HAS_RVALREFS
-					cont = std::move(f);
+					cont.alloc(std::move(f));
 #else
-					cont = f;
+					cont.alloc(f);
 #endif
 				}
 			}
@@ -569,12 +787,11 @@ namespace min11
 			void notify_with_lock()
 			{
 #if MIN11_HAS_FUTURE_CONTINUATIONS
+				if (cont.ptr)
 #if MIN11_HAS_RVALREFS
-				if (cont)
-					cont(std::move(value));
+					cont.ptr->invoke(std::move(value));
 #else
-				if (cont)
-					cont(value);
+					cont.ptr->invoke(value);
 #endif
 #endif
 				cond.notify_all();
@@ -584,15 +801,23 @@ namespace min11
 			T value;
 			mutex mtx;
 			condition_variable cond;
-#if MIN11_HAS_FUTURE_CONTINUATIONS
-#if MIN11_HAS_RVALUES
-			std::function<void(T&&)> cont;
-#else
-			std::function<void(const T&)> cont;
-#endif
-#endif
+			detail::closure_storage<T> cont;
 			bool retrieved;
 			volatile bool ready;
+		};
+
+		template<typename T, typename Data>
+		class future_state_data : public future_state<T>
+		{
+		public:
+
+			Data& data()
+			{
+				return data_;
+			}
+
+		private:
+			Data data_;
 		};
 
 		template<>
@@ -709,6 +934,74 @@ namespace min11
 			bool retrieved;
 			volatile bool ready;
 		};
+
+		template<typename T>
+		class promise_holder
+		{
+		public:
+			explicit promise_holder(future_state<T>* st)
+				: state(st)
+			{
+				st->add_ref();
+			}
+
+			promise_holder(const promise_holder& other)
+				: state(other.state)
+			{
+				state->add_ref();
+			}
+
+			promise_holder& operator=(const promise_holder& other)
+			{
+				other.state->add_ref();
+				state->dec_ref();
+				state = other.state();
+			}
+
+			~promise_holder()
+			{
+				state->dec_ref();
+			}
+
+			promise<T> promise() const;
+
+		private:
+			detail::future_state<T>* state;
+		};
+
+		template<typename T, typename Data>
+		class promise_holder_data
+		{
+		public:
+			explicit promise_holder_data(future_state_data<T, Data>* st)
+				: state(st)
+			{
+				st->add_ref();
+			}
+
+			promise_holder_data(const promise_holder_data& other)
+				: state(other.state)
+			{
+				state->add_ref();
+			}
+
+			promise_holder_data& operator=(const promise_holder_data& other)
+			{
+				other.state->add_ref();
+				state->dec_ref();
+				state = other.state();
+			}
+
+			~promise_holder_data()
+			{
+				state->dec_ref();
+			}
+
+			promise_with_data<T, Data> promise() const;
+
+		private:
+			detail::future_state_data<T, Data>* state;
+		};
 	}
 
 	template<>
@@ -716,6 +1009,7 @@ namespace min11
 	{
 		friend class promise<void>;
 		friend class shared_future<void>;
+		friend detail::make_ready_helper;
 #if !MIN11_HAS_RVALREFS
 		friend class detail::movable_future<void>;
 #endif
@@ -955,11 +1249,20 @@ namespace min11
 	template<>
 	class promise<void>
 	{
+		friend detail::promise_holder<void>;
 	public:
 		promise()
 			: state(new detail::future_state<void>)
 		{
 		}
+
+#if MIN11_HAS_RVALREFS
+		promise(promise&& other)
+			: state(other.state)
+		{
+			other.state = 0;
+		}
+#endif
 
 		~promise()
 		{
@@ -983,9 +1286,20 @@ namespace min11
 		}
 #endif
 
+		detail::promise_holder<void> hold() const
+		{
+			return detail::promise_holder<void>(state);
+		}
+
 	private:
 		promise(const promise&); // = delete;
 		promise& operator=(const promise&); // = delete;
+
+		promise(detail::future_state<void>* st)
+			: state(st)
+		{
+			state->add_ref();
+		}
 
 		detail::future_state<void>* state;
 	};
@@ -995,6 +1309,70 @@ namespace min11
 		return shared_future<void>(move(*this));
 	}
 
+	namespace detail
+	{
+		struct make_ready_helper
+		{
+#if MIN11_HAS_RVALREFS
+			template<typename T>
+			static inline future<T> make_ready(T&& v)
+			{
+				detail::future_state<T>* st = new detail::future_state<T>;
+				st->set_value(move(v));
+				return future<T>(st);
+			}
+#endif // MIN11_HAS_RVALREFS
+
+			template<typename T>
+			static inline future<T> make_ready(const T& v)
+			{
+				detail::future_state<T>* st = new detail::future_state<T>;
+				st->set_value(v);
+				return future<T>(st);
+			}
+
+			static inline future<void> make_ready()
+			{
+				detail::future_state<void>* st = new detail::future_state<void>;
+				st->set_value();
+				return future<void>(st);
+			}
+		};
+	} // namespace detail
+
+#if MIN11_HAS_RVALREFS
+	template<typename T>
+	inline future<T> make_ready_future(T&& v)
+	{
+		return detail::make_ready_helper::make_ready(move(v));
+	}
+#endif // MIN11_HAS_RVALREFS
+
+	template<typename T>
+	inline future<T> make_ready_future(const T& v)
+	{
+		return detail::make_ready_helper::make_ready(v);
+	}
+
+	inline future<void> make_ready_future()
+	{
+		return detail::make_ready_helper::make_ready();
+	}
+
+	namespace detail
+	{
+		template<typename T>
+		inline promise<T> promise_holder<T>::promise() const
+		{
+			return min11::promise<T>(state);
+		}
+
+		template<typename T, typename Data>
+		inline promise_with_data<T, Data> promise_holder_data<T, Data>::promise() const
+		{
+			return min11::promise_with_data<T, Data>(state);
+		}
+	} // namespace detail
 }
 
 #endif // MIN11__FUTURE_H
